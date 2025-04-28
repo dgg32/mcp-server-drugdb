@@ -14,36 +14,35 @@ with open("config.yaml", "r") as stream:
         print(exc)
 
 
-con = duckdb.connect("drug.db")
-
-con.install_extension("duckpgq", repository="community")
-
-con.sql("INSTALL fts;")
-con.sql("INSTALL vss;")
-
-con.load_extension("duckpgq")
-con.load_extension("fts")
-con.load_extension("vss")
-
-openai.api_key  = PARAM['openai_api']
-client = openai.OpenAI(api_key = PARAM['openai_api'])
-
-def embeddings(text) -> list[float]:
-    text = text.replace("\n", " ")
-    return client.embeddings.create(input = [text], model='text-embedding-3-small').data[0].embedding
-
-con.create_function('embeddings', embeddings)
-
 @mcp.tool()
 def query_data(sql: str) -> str:
     """Execute SQL queries safely"""
+    con = duckdb.connect("drug.db")
 
+    con.install_extension("duckpgq", repository="community")
+    con.sql("INSTALL fts;")
+    con.sql("INSTALL vss;")
+
+    con.load_extension("duckpgq")
+    con.load_extension("fts")
+    con.load_extension("vss")
+
+    openai.api_key  = PARAM['openai_api']
+    client = openai.OpenAI(api_key = PARAM['openai_api'])
+
+    def embeddings(text) -> list[float]:
+        text = text.replace("\n", " ")
+        return client.embeddings.create(input = [text], model='text-embedding-3-small').data[0].embedding
+
+    con.create_function('embeddings', embeddings)
     try:
         result = con.sql(sql).fetchall()
         con.commit()
         return "\n".join(str(row) for row in result)
     except Exception as e:
         return f"Error: {str(e)}"
+    finally:
+        con.close()
 
 
 @mcp.prompt()
