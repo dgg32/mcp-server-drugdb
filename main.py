@@ -17,28 +17,48 @@ with open("config.yaml", "r") as stream:
 @mcp.tool()
 def query_data(sql: str) -> str:
     """Execute SQL queries safely"""
-    con = duckdb.connect("drug.db")
+    db_file = "drug.db"
 
-    con.install_extension("duckpgq", repository="community")
-    con.sql("INSTALL fts;")
-    con.sql("INSTALL vss;")
-
-    con.load_extension("duckpgq")
-    con.load_extension("fts")
-    con.load_extension("vss")
-
-    openai.api_key  = PARAM['openai_api']
-    client = openai.OpenAI(api_key = PARAM['openai_api'])
-
-    def embeddings(text) -> list[float]:
-        text = text.replace("\n", " ")
-        return client.embeddings.create(input = [text], model='text-embedding-3-small').data[0].embedding
-
-    con.create_function('embeddings', embeddings)
     try:
+        # Establish connection once
+        con = duckdb.connect(database=db_file)
+
+        # Install and load extensions only if not already loaded
+        installed_extensions = con.sql("SELECT extension_name FROM duckdb_extensions() WHERE installed = true;").fetchall()
+        installed_names = {ext[0] for ext in installed_extensions}
+
+        if 'duckpgq' not in installed_names:
+            con.install_extension("duckpgq", repository="community")
+        con.load_extension("duckpgq")
+
+        for ext in ['fts', 'vss']:
+            if ext not in installed_names:
+                con.install_extension(ext)
+            con.load_extension(ext)
+
+        # Configure OpenAI API key - consider environment variables
+        openai.api_key  = PARAM['openai_api']
+        client = openai.OpenAI(api_key = PARAM['openai_api'])
+
+        # Create the function only if it doesn't exist
+        function_exists = con.sql("SELECT function_name FROM duckdb_functions()").fetchall()
+        function_names = {fuc[0] for fuc in function_exists}
+        if 'embeddings' not in function_names:
+            def embeddings(text: str) -> list[float]:
+                text = text.replace("\n", " ")
+                try:
+                    response = client.embeddings.create(input=[text], model='text-embedding-3-small')
+                    return response.data[0].embedding
+                except openai.APIError as e:
+                    return f"OpenAI API Error: {e}"
+            con.create_function('embeddings', embeddings)
+        
+        con.commit()  # Still necessary due to extension installations and function creation
+
         result = con.sql(sql).fetchall()
-        con.commit()
+        
         return "\n".join(str(row) for row in result)
+
     except Exception as e:
         return f"Error: {str(e)}"
     finally:
